@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICU Bed Predictor</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", Arial, sans-serif; background: #eef2f7; color: #1f2937; }
+
+    /* top banner */
+    header { background: #0f4c81; color: white; padding: 36px 20px 50px; text-align: center; }
+    header h1 { margin: 0; font-size: 28px; }
+    header p { margin: 8px 0 0; opacity: 0.85; font-size: 14px; }
+
+    .container { max-width: 760px; margin: -30px auto 40px; padding: 0 16px; }
+    .card { background: white; border-radius: 12px; padding: 24px; margin-bottom: 20px; box-shadow: 0 4px 14px rgba(0,0,0,0.08); }
+    .card h2 { margin: 0 0 16px; font-size: 18px; }
+
+    /* two column form */
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; color: #4b5563; }
+    input, select { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 15px; }
+    input:focus, select:focus { outline: none; border-color: #0f4c81; }
+
+    button { width: 100%; margin-top: 20px; padding: 12px; background: #0f4c81; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; }
+    button:hover { background: #0b3a63; }
+    #error { color: #b91c1c; margin: 12px 0 0; font-size: 14px; }
+
+    /* result section (hidden until we get an answer) */
+    #result { display: none; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; text-align: center; }
+    .stat { background: #f3f6fa; border-radius: 10px; padding: 16px 8px; }
+    .stat .number { font-size: 28px; font-weight: 700; color: #0f4c81; }
+    .stat .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+
+    /* occupancy bar */
+    .bar-bg { background: #e5e7eb; border-radius: 20px; height: 16px; margin-top: 20px; overflow: hidden; }
+    #bar { height: 100%; width: 0; border-radius: 20px; }
+    #status { margin: 10px 0 0; font-weight: 600; text-align: center; }
+
+    .note { font-size: 12px; color: #6b7280; text-align: center; }
+
+    /* on small screens use one column */
+    @media (max-width: 600px) { .grid, .stats { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ICU Bed Predictor</h1>
+    <p>Predicts tomorrow's adult ICU patients and free beds</p>
+  </header>
+
+  <div class="container">
+    <!-- input card -->
+    <div class="card">
+      <h2>Enter today's numbers</h2>
+      <div class="grid">
+        <div>
+          <label>Patients today</label>
+          <input id="total_today" type="number" value="1407">
+        </div>
+        <div>
+          <label>Patients yesterday</label>
+          <input id="total_yesterday" type="number" value="1424">
+        </div>
+        <div>
+          <label>Patients 7 days ago</label>
+          <input id="total_7days_ago" type="number" value="1446">
+        </div>
+        <div>
+          <label>COVID patients today</label>
+          <input id="crci_patients_today" type="number" value="218">
+        </div>
+        <div>
+          <label>Today is</label>
+          <select id="is_weekend">
+            <option value="0">Weekday</option>
+            <option value="1">Weekend</option>
+          </select>
+        </div>
+        <div>
+          <label>Total ICU beds</label>
+          <input id="total_beds" type="number" value="2012">
+        </div>
+      </div>
+      <button onclick="predict()">Predict tomorrow</button>
+      <p id="error"></p>
+    </div>
+
+    <!-- result card -->
+    <div class="card" id="result">
+      <h2>Prediction for tomorrow</h2>
+      <div class="stats">
+        <div class="stat"><div class="number" id="patients">-</div><div class="label">Patients</div></div>
+        <div class="stat"><div class="number" id="free">-</div><div class="label">Free beds</div></div>
+        <div class="stat"><div class="number" id="percent">-</div><div class="label">Beds occupied</div></div>
+      </div>
+      <div class="bar-bg"><div id="bar"></div></div>
+      <p id="status"></p>
+    </div>
+
+    <p class="note">Data: Ontario open data, adult ICU beds</p>
+  </div>
+
+  <script>
+    async function predict() {
+      const ids = ["total_today", "total_yesterday", "total_7days_ago",
+                   "crci_patients_today", "is_weekend", "total_beds"];
+      const data = {};
+      const errorBox = document.getElementById("error");
+      errorBox.innerText = "";
+
+      // read every field and convert text to a number
+      for (const id of ids) {
+        const value = document.getElementById(id).value;
+        if (value === "") {
+          errorBox.innerText = "Please fill all fields";
+          return;
+        }
+        data[id] = Number(value);
+      }
+
+      // simple checks before calling the API
+      if (data.total_today <= 0) {
+        errorBox.innerText = "Patients today must be more than 0";
+        return;
+      }
+      if (data.total_today > data.total_beds) {
+        errorBox.innerText = "Patients today cannot be more than total ICU beds";
+        return;
+      }
+
+      // send the data to our Flask API
+      try {
+        const response = await fetch("/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data)
+        });
+        if (!response.ok) {
+          errorBox.innerText = "Server error, please check the inputs";
+          return;
+        }
+        const output = await response.json();
+
+        // show the answer
+        const patients = output.predicted_patients_tomorrow;
+        const free = Math.max(output.predicted_free_beds_tomorrow, 0);
+        const percent = Math.round(patients / data.total_beds * 100);
+
+        document.getElementById("patients").innerText = patients;
+        document.getElementById("free").innerText = free;
+        document.getElementById("percent").innerText = percent + "%";
+
+        // bar colour and message depend on how full the ICU will be
+        const bar = document.getElementById("bar");
+        const status = document.getElementById("status");
+        bar.style.width = Math.min(percent, 100) + "%";
+        if (percent < 80) {
+          bar.style.background = "#16a34a";
+          status.innerText = "Normal: enough beds available";
+        } else if (percent < 90) {
+          bar.style.background = "#f59e0b";
+          status.innerText = "Busy: keep a close watch";
+        } else {
+          bar.style.background = "#dc2626";
+          status.innerText = "Critical: very few beds left";
+        }
+        document.getElementById("result").style.display = "block";
+      } catch (e) {
+        errorBox.innerText = "Could not reach the server. Is app.py running?";
+      }
+    }
+  </script>
+</body>
+</html>
